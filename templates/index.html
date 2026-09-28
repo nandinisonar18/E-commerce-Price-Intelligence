@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Price Intelligence — Smartphones</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+<header>
+  <h1>📱 E-commerce Price Intelligence</h1>
+  <p class="subtitle">Compare live smartphone prices &amp; EMI across Croma, Vijay Sales and Reliance Digital.</p>
+</header>
+
+<main>
+  <section class="search-card">
+    <form id="search-form">
+      <div class="row">
+        <label>Mobile model
+          <input type="text" name="query" placeholder="e.g. iPhone 17 Pro" required>
+        </label>
+        <label>Storage
+          <select name="storage">
+            <option value="">Any</option>
+            <option>128GB</option>
+            <option>256GB</option>
+            <option>512GB</option>
+            <option>1TB</option>
+          </select>
+        </label>
+        <label>Colour
+          <input type="text" name="colour" placeholder="Any / selected">
+        </label>
+      </div>
+      <div class="row">
+        <label>Budget min (₹)
+          <input type="number" name="budget_min" placeholder="e.g. 120000">
+        </label>
+        <label>Budget max (₹)
+          <input type="number" name="budget_max" placeholder="e.g. 140000">
+        </label>
+        <label>Down payment (₹)
+          <input type="number" name="down_payment" value="20000">
+        </label>
+        <label>EMI tenure
+          <select name="tenure_months">
+            <option value="6">6 months</option>
+            <option value="12" selected>12 months</option>
+            <option value="18">18 months</option>
+            <option value="24">24 months</option>
+          </select>
+        </label>
+      </div>
+      <button type="submit">Search &amp; Compare</button>
+    </form>
+    <p id="status" class="status"></p>
+    <p id="filter-note" class="filter-note" style="display:none;"></p>
+  </section>
+
+  <section id="results"></section>
+</main>
+
+<script>
+const form = document.getElementById('search-form');
+const statusEl = document.getElementById('status');
+const resultsEl = document.getElementById('results');
+const inr = (n) => n == null ? '—' : '₹' + Number(n).toLocaleString('en-IN', {maximumFractionDigits: 0});
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(form).entries());
+  statusEl.textContent = 'Scraping sources… this can take a few seconds.';
+  resultsEl.innerHTML = '';
+  try {
+    const resp = await fetch('/api/search', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data),
+    });
+    const json = await resp.json();
+    render(json);
+  } catch (err) {
+    statusEl.textContent = 'Something went wrong: ' + err;
+  }
+});
+
+function render(json) {
+  const succeeded = json.sources_succeeded || [];
+  const failed = json.sources_failed || [];
+  let statusText = `Sources OK: ${succeeded.join(', ') || 'none'}`;
+  if (failed.length) statusText += ` · Failed/blocked: ${failed.join(', ')} (showing cached data where available)`;
+  if (json.used_fixture_fallback) statusText += ' · ⚠ some results are from cached fallback snapshots';
+  statusEl.textContent = statusText;
+  statusEl.classList.remove('warning');
+
+  const noteEl = document.getElementById('filter-note');
+  noteEl.style.display = 'none';
+
+  if (!json.results || !json.results.length) {
+    resultsEl.innerHTML = `<p class="empty">${json.no_match_message || 'No comparable offers found. Try a broader query or different budget.'}</p>`;
+    return;
+  }
+
+  resultsEl.innerHTML = json.results.map((r, idx) => {
+    const p = r.product;
+    const best = r.offers[0];
+    const rows = r.offers.map(o => `
+      <tr class="${o.source === best.source ? 'best-row' : ''}">
+        <td>${o.source}${o.is_fixture_fallback ? ' <span class="tag">cached</span>' : ''}</td>
+        <td>${o.product_name || ''}</td>
+        <td>${inr(o.selling_price)}</td>
+        <td>${o.offer_text ? o.offer_text.slice(0, 70) + (o.offer_text.length > 70 ? '…' : '') : '—'}</td>
+        <td>${inr(o.effective_price)}</td>
+        <td>${o.emi_monthly ? inr(o.emi_monthly) + '/mo × ' + o.emi_tenure : '—'}${o.emi_breakdown && o.emi_breakdown.note ? `<div class="emi-note">${o.emi_breakdown.note}</div>` : ''}</td>
+        <td>${o.availability}</td>
+        <td>${o.product_url ? `<a href="${o.product_url}" target="_blank" rel="noopener">${/search/i.test(o.product_url) ? 'search on site ↗' : 'buy on site ↗'}</a>` : '—'}</td>
+      </tr>`).join('');
+
+    return `
+      <article class="product-card">
+        <h2>${idx === 0 ? '🏆 ' : ''}${p.canonical_name || p.model || 'Product'}</h2>
+        <p class="why">
+          Best current price: <strong>${best.source}</strong> at <strong>${inr(best.selling_price)}</strong>.
+          Best effective price after eligible offer: <strong>${inr(best.effective_price)}</strong>.
+          Estimated EMI: <strong>${inr(best.emi_monthly)}/month</strong> for ${best.emi_tenure} months
+          ${best.emi_breakdown && best.emi_breakdown.is_no_cost_emi ? '(no-cost EMI)' : '(estimate)'}.
+        </p>
+        <table>
+          <thead><tr><th>Source</th><th>Listing</th><th>Listed price</th><th>Offer</th><th>Effective price</th><th>EMI</th><th>Stock</th><th>Link</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        ${r.offers.some(o => o.product_url && /search/i.test(o.product_url)) ? '<p class="link-legend">"buy on site" opens the exact retailer product page. "search on site" opens that retailer\'s live search results for this listing (exact page not captured yet).</p>' : ''}
+      </article>`;
+  }).join('');
+}
+</script>
+</body>
+</html>
